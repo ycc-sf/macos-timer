@@ -2,6 +2,14 @@ import AppKit
 import Combine
 import SwiftUI
 
+private enum AppIconStyle {
+    static func hourglass(pointSize: CGFloat) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        return NSImage(systemSymbolName: "hourglass", accessibilityDescription: "hourglass")?
+            .withSymbolConfiguration(config)
+    }
+}
+
 struct CountdownItem: Identifiable {
     let id: UUID
     let originalMinutes: Int
@@ -90,6 +98,7 @@ final class CountdownStore: ObservableObject {
         alert.alertStyle = .informational
         alert.messageText = "倒计时结束"
         alert.informativeText = "\(item.originalMinutes) 分钟倒计时已完成。"
+        alert.icon = AppIconStyle.hourglass(pointSize: 48)
         alert.addButton(withTitle: "重新计时 \(item.originalMinutes) 分钟")
         alert.addButton(withTitle: "我知道了")
 
@@ -114,13 +123,11 @@ struct CountdownMenuBarView: View {
                 Text("设置倒计时")
                     .font(.headline)
 
-                HStack(spacing: 8) {
-                    ForEach(quickMinutes, id: \.self) { minute in
-                        Button("\(minute)分") {
-                            store.addCountdown(minutes: minute)
-                        }
-                        .buttonStyle(.bordered)
+                ForEach(quickMinutes, id: \.self) { minute in
+                    Button("\(minute)分") {
+                        store.addCountdown(minutes: minute)
                     }
+                    .buttonStyle(.bordered)
                 }
 
                 HStack(spacing: 8) {
@@ -169,7 +176,7 @@ struct CountdownMenuBarView: View {
             }
         }
         .padding(12)
-        .frame(width: 360)
+        .frame(width: 250)
     }
 }
 
@@ -179,6 +186,9 @@ struct MacOSReminderApp: App {
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
+        if let appIcon = AppIconStyle.hourglass(pointSize: 256) {
+            NSApplication.shared.applicationIconImage = appIcon
+        }
     }
 
     var body: some Scene {
@@ -186,7 +196,7 @@ struct MacOSReminderApp: App {
             CountdownMenuBarView(store: store)
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "clock")
+                Image(systemName: "hourglass")
                 if store.activeCount > 0 {
                     Text("\(store.activeCount)")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
