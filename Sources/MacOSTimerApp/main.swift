@@ -55,15 +55,24 @@ struct CountdownItem: Identifiable {
     }
 }
 
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case english = "en"
+    case chinese = "zh"
+
+    var id: String { rawValue }
+}
+
 @MainActor
 final class CountdownStore: ObservableObject {
     private static let presetMinutesKey = "preset_minutes"
+    private static let languageKey = "app_language"
     private static let defaultPresetMinutes = [1, 3, 5, 10, 20, 60]
 
     @Published var customMinutesInput = ""
     @Published private(set) var currentTime = Date()
     @Published private(set) var activeCountdowns: [CountdownItem] = []
     @Published private(set) var presetMinutes: [Int] = defaultPresetMinutes
+    @Published var language: AppLanguage = .english
     @Published var launchAtLoginEnabled = false
 
     var activeCount: Int { activeCountdowns.count }
@@ -76,12 +85,25 @@ final class CountdownStore: ObservableObject {
         if let saved = UserDefaults.standard.array(forKey: Self.presetMinutesKey) as? [Int], !saved.isEmpty {
             presetMinutes = saved
         }
+        if let savedLanguage = UserDefaults.standard.string(forKey: Self.languageKey),
+           let parsedLanguage = AppLanguage(rawValue: savedLanguage) {
+            language = parsedLanguage
+        }
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.tick()
             }
+    }
+
+    func localized(_ english: String, _ chinese: String) -> String {
+        language == .english ? english : chinese
+    }
+
+    func setLanguage(_ value: AppLanguage) {
+        language = value
+        UserDefaults.standard.set(value.rawValue, forKey: Self.languageKey)
     }
 
     func addCountdown(minutes: Int) {
@@ -124,10 +146,13 @@ final class CountdownStore: ObservableObject {
 
     func hoverDetailsText(for item: CountdownItem, now: Date) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: language == .english ? "en_US" : "zh_CN")
         formatter.dateStyle = .none
         formatter.timeStyle = .medium
         let remainingSeconds = max(0, Int(item.endDate.timeIntervalSince(now)))
+        if language == .english {
+            return "Start: \(formatter.string(from: item.startDate))\nEnd: \(formatter.string(from: item.endDate))\nRemaining: \(remainingSeconds)s"
+        }
         return "开始：\(formatter.string(from: item.startDate))\n结束：\(formatter.string(from: item.endDate))\n剩余：\(remainingSeconds) 秒"
     }
 
@@ -159,9 +184,9 @@ final class CountdownStore: ObservableObject {
             launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "开机自启设置失败"
+            alert.messageText = localized("Failed to set launch at login", "开机自启设置失败")
             alert.informativeText = error.localizedDescription
-            alert.addButton(withTitle: "我知道了")
+            alert.addButton(withTitle: localized("OK", "我知道了"))
             alert.runModal()
         }
     }
@@ -182,9 +207,12 @@ final class CountdownStore: ObservableObject {
         guard !unique.isEmpty else {
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "预设分钟无效"
-            alert.informativeText = "请输入正整数，并用逗号分隔，例如：1,3,5,10"
-            alert.addButton(withTitle: "我知道了")
+            alert.messageText = localized("Invalid preset values", "预设分钟无效")
+            alert.informativeText = localized(
+                "Enter positive integers separated by commas, e.g. 1,3,5,10",
+                "请输入正整数，并用逗号分隔，例如：1,3,5,10"
+            )
+            alert.addButton(withTitle: localized("OK", "我知道了"))
             alert.runModal()
             return
         }
@@ -218,11 +246,14 @@ final class CountdownStore: ObservableObject {
 
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "倒计时结束"
-        alert.informativeText = "\(item.originalMinutes) 分钟倒计时已完成。"
+        alert.messageText = localized("Timer Finished", "倒计时结束")
+        alert.informativeText = localized(
+            "\(item.originalMinutes)-minute timer is complete.",
+            "\(item.originalMinutes) 分钟倒计时已完成。"
+        )
         alert.icon = AppIconStyle.hourglass(pointSize: 48)
-        alert.addButton(withTitle: "重新计时 \(item.originalMinutes) 分钟")
-        alert.addButton(withTitle: "我知道了")
+        alert.addButton(withTitle: localized("Restart \(item.originalMinutes) min", "重新计时 \(item.originalMinutes) 分钟"))
+        alert.addButton(withTitle: localized("Got it", "我知道了"))
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
@@ -246,10 +277,13 @@ struct CountdownMenuBarView: View {
         NSApplication.shared.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "确认退出？"
-        alert.informativeText = "退出后将停止所有进行中的倒计时。"
-        alert.addButton(withTitle: "退出")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = store.localized("Confirm Quit?", "确认退出？")
+        alert.informativeText = store.localized(
+            "All active timers will stop after quitting.",
+            "退出后将停止所有进行中的倒计时。"
+        )
+        alert.addButton(withTitle: store.localized("Quit", "退出"))
+        alert.addButton(withTitle: store.localized("Cancel", "取消"))
         if alert.runModal() == .alertFirstButtonReturn {
             NSApplication.shared.terminate(nil)
         }
@@ -257,17 +291,30 @@ struct CountdownMenuBarView: View {
 
     private var settingsPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("设置")
+            Text(store.localized("Settings", "设置"))
                 .font(.headline)
 
-            Text("预设分钟（逗号分隔）")
+            Text(store.localized("Language", "语言"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: Binding(
+                get: { store.language },
+                set: { store.setLanguage($0) }
+            )) {
+                Text("English").tag(AppLanguage.english)
+                Text("中文").tag(AppLanguage.chinese)
+            }
+            .pickerStyle(.segmented)
+
+            Text(store.localized("Preset Minutes (comma-separated)", "预设分钟（逗号分隔）"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
-                TextField("例如 1,3,5,10", text: $presetMinutesInput)
+                TextField(store.localized("e.g. 1,3,5,10", "例如 1,3,5,10"), text: $presetMinutesInput)
                     .textFieldStyle(.roundedBorder)
-                Button("保存") {
+                Button(store.localized("Save", "保存")) {
                     store.updatePresetMinutes(from: presetMinutesInput)
                     presetMinutesInput = store.presetMinutes.map(String.init).joined(separator: ",")
                 }
@@ -276,7 +323,7 @@ struct CountdownMenuBarView: View {
 
             Divider()
 
-            Toggle("开机自启", isOn: Binding(
+            Toggle(store.localized("Launch at Login", "开机自启"), isOn: Binding(
                 get: { store.launchAtLoginEnabled },
                 set: { store.setLaunchAtLogin($0) }
             ))
@@ -284,7 +331,7 @@ struct CountdownMenuBarView: View {
 
             HStack {
                 Spacer()
-                Button("退出") {
+                Button(store.localized("Quit", "退出")) {
                     showSettings = false
                     confirmAndQuit()
                 }
@@ -299,7 +346,7 @@ struct CountdownMenuBarView: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("设置倒计时")
+                    Text(store.localized("Set Timer", "设置倒计时"))
                         .font(.headline)
                     Spacer()
                     Button {
@@ -309,7 +356,7 @@ struct CountdownMenuBarView: View {
                         Image(systemName: "gearshape")
                     }
                     .buttonStyle(.plain)
-                    .help("设置")
+                    .help(store.localized("Settings", "设置"))
                     .popover(isPresented: $showSettings, arrowEdge: .top) {
                         settingsPanel
                     }
@@ -321,7 +368,7 @@ struct CountdownMenuBarView: View {
                         store.addCountdown(minutes: minute)
                     } label: {
                         HStack {
-                            Text("\(minute) 分钟")
+                            Text(store.localized("\(minute) min", "\(minute) 分钟"))
                                 .font(.system(size: 13, weight: .semibold))
                             Spacer()
                             if count > 0 {
@@ -367,7 +414,7 @@ struct CountdownMenuBarView: View {
                 }
 
                 HStack(spacing: 8) {
-                    TextField("输入 n 分钟", text: $store.customMinutesInput)
+                    TextField(store.localized("Enter n minutes", "输入 n 分钟"), text: $store.customMinutesInput)
                         .textFieldStyle(.plain)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
@@ -377,7 +424,7 @@ struct CountdownMenuBarView: View {
                             store.startCustomCountdown()
                         }
 
-                    Button("开始") {
+                    Button(store.localized("Start", "开始")) {
                         store.startCustomCountdown()
                     }
                     .buttonStyle(.bordered)
@@ -389,16 +436,16 @@ struct CountdownMenuBarView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("进行中的倒计时")
+                Text(store.localized("Active Timers", "进行中的倒计时"))
                     .font(.headline)
 
                 if store.activeCountdowns.isEmpty {
-                    Text("暂无进行中的倒计时")
+                    Text(store.localized("No active timers", "暂无进行中的倒计时"))
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(store.activeCountdowns.sorted(by: { $0.endDate < $1.endDate })) { item in
                         HStack {
-                            Text("\(item.originalMinutes) 分钟")
+                            Text(store.localized("\(item.originalMinutes) min", "\(item.originalMinutes) 分钟"))
                                 .frame(width: 90, alignment: .leading)
 
                             Spacer()
@@ -413,7 +460,7 @@ struct CountdownMenuBarView: View {
                                 Image(systemName: "xmark.circle")
                             }
                             .buttonStyle(.plain)
-                            .help("关闭这个计时")
+                            .help(store.localized("Stop this timer", "关闭这个计时"))
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -460,7 +507,7 @@ struct CountdownMenuBarView: View {
         }
         .padding(12)
         .frame(width: 310)
-        .background(MenuGlassBackground().opacity(0.96))
+        .background(MenuGlassBackground().opacity(0.78))
     }
 }
 
