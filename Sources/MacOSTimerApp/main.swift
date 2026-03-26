@@ -62,10 +62,21 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
+    case iconOnly = "icon_only"
+    case iconWithCount = "icon_with_count"
+    case iconWithCountAndMMSS = "icon_with_count_mmss"
+    case iconWithMMSS = "icon_with_mmss"
+    case iconWithSeconds = "icon_with_seconds"
+
+    var id: String { rawValue }
+}
+
 @MainActor
 final class CountdownStore: ObservableObject {
     private static let presetMinutesKey = "preset_minutes"
     private static let languageKey = "app_language"
+    private static let menuBarDisplayModeKey = "menu_bar_display_mode"
     private static let defaultPresetMinutes = [1, 3, 5, 10, 20, 60]
 
     @Published var customMinutesInput = ""
@@ -73,6 +84,7 @@ final class CountdownStore: ObservableObject {
     @Published private(set) var activeCountdowns: [CountdownItem] = []
     @Published private(set) var presetMinutes: [Int] = defaultPresetMinutes
     @Published var language: AppLanguage = .english
+    @Published var menuBarDisplayMode: MenuBarDisplayMode = .iconWithCountAndMMSS
     @Published var launchAtLoginEnabled = false
 
     var activeCount: Int { activeCountdowns.count }
@@ -80,7 +92,6 @@ final class CountdownStore: ObservableObject {
     private var timerCancellable: AnyCancellable?
     private var completionQueue: [CountdownItem] = []
     private var isPresentingAlert = false
-    private var completionAlertHostWindow: NSWindow?
 
     init() {
         if let saved = UserDefaults.standard.array(forKey: Self.presetMinutesKey) as? [Int], !saved.isEmpty {
@@ -89,6 +100,10 @@ final class CountdownStore: ObservableObject {
         if let savedLanguage = UserDefaults.standard.string(forKey: Self.languageKey),
            let parsedLanguage = AppLanguage(rawValue: savedLanguage) {
             language = parsedLanguage
+        }
+        if let savedMenuBarMode = UserDefaults.standard.string(forKey: Self.menuBarDisplayModeKey),
+           let parsedMenuBarMode = MenuBarDisplayMode(rawValue: savedMenuBarMode) {
+            menuBarDisplayMode = parsedMenuBarMode
         }
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
@@ -105,6 +120,26 @@ final class CountdownStore: ObservableObject {
     func setLanguage(_ value: AppLanguage) {
         language = value
         UserDefaults.standard.set(value.rawValue, forKey: Self.languageKey)
+    }
+
+    func setMenuBarDisplayMode(_ value: MenuBarDisplayMode) {
+        menuBarDisplayMode = value
+        UserDefaults.standard.set(value.rawValue, forKey: Self.menuBarDisplayModeKey)
+    }
+
+    func menuBarDisplayModeLabel(_ mode: MenuBarDisplayMode) -> String {
+        switch mode {
+        case .iconOnly:
+            return localized("Icon only", "单独图标")
+        case .iconWithCount:
+            return localized("Icon + Count", "图标+数量")
+        case .iconWithCountAndMMSS:
+            return localized("Icon + Count + mm:ss", "图标+数量+分秒")
+        case .iconWithMMSS:
+            return localized("Icon + mm:ss", "图标+分秒")
+        case .iconWithSeconds:
+            return localized("Icon + Seconds", "图标+秒数")
+        }
     }
 
     func addCountdown(minutes: Int) {
@@ -167,7 +202,44 @@ final class CountdownStore: ObservableObject {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
+    var nearestRemainingSeconds: Int? {
+        guard let nearestItem = activeCountdowns.min(by: { $0.endDate < $1.endDate }) else {
+            return nil
+        }
+        return max(0, Int(nearestItem.endDate.timeIntervalSince(currentTime)))
+    }
+
     var hasActiveTimers: Bool { activeCount > 0 }
+
+    var menuBarMMSS: String {
+        nearestRemainingMMSS ?? "00:00"
+    }
+
+    var menuBarCountAndMMSS: String {
+        "\(activeCount)-\(menuBarMMSS)"
+    }
+
+    var menuBarSeconds: String {
+        if let nearestRemainingSeconds {
+            return "\(nearestRemainingSeconds)"
+        }
+        return "0"
+    }
+
+    var menuBarDisplayText: String {
+        switch menuBarDisplayMode {
+        case .iconOnly:
+            return ""
+        case .iconWithCount:
+            return "\(activeCount)"
+        case .iconWithCountAndMMSS:
+            return hasActiveTimers ? menuBarCountAndMMSS : "0-00:00"
+        case .iconWithMMSS:
+            return menuBarMMSS
+        case .iconWithSeconds:
+            return menuBarSeconds
+        }
+    }
 
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
@@ -237,27 +309,6 @@ final class CountdownStore: ObservableObject {
         presentCompletionAlert(for: item)
     }
 
-    private func hostWindowForCompletionAlert() -> NSWindow {
-        if let existing = completionAlertHostWindow {
-            return existing
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 140),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovable = false
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.isReleasedWhenClosed = false
-        completionAlertHostWindow = window
-        return window
-    }
-
     private func presentCompletionAlert(for item: CountdownItem) {
         isPresentingAlert = true
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -272,19 +323,13 @@ final class CountdownStore: ObservableObject {
         alert.icon = AppIconStyle.hourglass(pointSize: 48)
         alert.addButton(withTitle: localized("Restart \(item.originalMinutes) min", "重新计时 \(item.originalMinutes) 分钟"))
         alert.addButton(withTitle: localized("Got it", "我知道了"))
-        let hostWindow = hostWindowForCompletionAlert()
-        hostWindow.center()
-        hostWindow.makeKeyAndOrderFront(nil)
-        alert.beginSheetModal(for: hostWindow) { [weak self] response in
-            guard let self else { return }
-            if response == .alertFirstButtonReturn {
-                self.addCountdown(minutes: item.originalMinutes)
-            }
-
-            hostWindow.orderOut(nil)
-            self.isPresentingAlert = false
-            self.processCompletionQueueIfNeeded()
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            addCountdown(minutes: item.originalMinutes)
         }
+
+        isPresentingAlert = false
+        processCompletionQueueIfNeeded()
     }
 }
 
@@ -329,6 +374,20 @@ struct CountdownMenuBarView: View {
                 Text("中文").tag(AppLanguage.chinese)
             }
             .pickerStyle(.segmented)
+
+            Text(store.localized("Menu Bar Display", "菜单栏展示"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: Binding(
+                get: { store.menuBarDisplayMode },
+                set: { store.setMenuBarDisplayMode($0) }
+            )) {
+                ForEach(MenuBarDisplayMode.allCases) { mode in
+                    Text(store.menuBarDisplayModeLabel(mode)).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
 
             Text(store.localized("Preset Minutes (comma-separated)", "预设分钟（逗号分隔）"))
                 .font(.caption)
@@ -549,19 +608,13 @@ struct MacOSTimerApp: App {
         MenuBarExtra {
             CountdownMenuBarView(store: store)
         } label: {
-            HStack(spacing: 4) {
+            Label {
+                Text(store.menuBarDisplayText)
+                    .monospacedDigit()
+            } icon: {
                 Image(systemName: "hourglass")
-                if store.hasActiveTimers {
-                    Text("\(store.activeCount)")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .monospacedDigit()
-                        .frame(width: 14, alignment: .trailing)
-                    Text(store.nearestRemainingMMSS ?? "--:--")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .monospacedDigit()
-                        .frame(width: 34, alignment: .leading)
-                }
             }
+            .labelStyle(.titleAndIcon)
         }
         .menuBarExtraStyle(.window)
     }
