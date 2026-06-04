@@ -22,6 +22,34 @@ private struct GlassCardModifier: ViewModifier {
     }
 }
 
+// macOS 26 回归：MenuBarExtra 窗口内容缩小后 frame 不自动收缩，需手动同步
+private struct ViewHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct WindowResizer: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard height > 0 else { return }
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            let current = window.frame
+            guard abs(current.height - height) > 0.5 else { return }
+            var frame = current
+            // 保持窗口顶部位置不变，调整底边
+            frame.origin.y += (current.height - height)
+            frame.size.height = height
+            window.setFrame(frame, display: true, animate: false)
+        }
+    }
+}
+
 private struct MenuGlassBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
@@ -340,6 +368,7 @@ struct CountdownMenuBarView: View {
     @State private var hoveredCountdownID: UUID?
     @State private var showSettings = false
     @State private var presetMinutesInput = ""
+    @State private var windowHeight: CGFloat = 0
 
     private func confirmAndQuit() {
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -589,7 +618,16 @@ struct CountdownMenuBarView: View {
         }
         .padding(12)
         .frame(width: 310)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: ViewHeightKey.self, value: geo.size.height)
+            }
+        )
+        .onPreferenceChange(ViewHeightKey.self) { h in
+            windowHeight = h
+        }
         .background(MenuGlassBackground().opacity(0.78))
+        .background(WindowResizer(height: windowHeight))
     }
 }
 
