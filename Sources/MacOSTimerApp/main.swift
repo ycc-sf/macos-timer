@@ -74,12 +74,20 @@ struct CountdownItem: Identifiable {
     let originalMinutes: Int
     let startDate: Date
     let endDate: Date
+    var remark: String // 备注，最多 100 字符
 
-    init(id: UUID = UUID(), originalMinutes: Int, startDate: Date, endDate: Date) {
+    init(
+        id: UUID = UUID(),
+        originalMinutes: Int,
+        startDate: Date,
+        endDate: Date,
+        remark: String = ""
+    ) {
         self.id = id
         self.originalMinutes = originalMinutes
         self.startDate = startDate
         self.endDate = endDate
+        self.remark = String(remark.prefix(100))
     }
 }
 
@@ -170,11 +178,13 @@ final class CountdownStore: ObservableObject {
         }
     }
 
-    func addCountdown(minutes: Int) {
+    func addCountdown(minutes: Int, remark: String = "") {
         guard minutes > 0 else { return }
         let startDate = Date()
         let endDate = startDate.addingTimeInterval(TimeInterval(minutes * 60))
-        activeCountdowns.append(CountdownItem(originalMinutes: minutes, startDate: startDate, endDate: endDate))
+        activeCountdowns.append(
+            CountdownItem(originalMinutes: minutes, startDate: startDate, endDate: endDate, remark: remark)
+        )
     }
 
     func startCustomCountdown() {
@@ -186,6 +196,11 @@ final class CountdownStore: ObservableObject {
 
     func stopCountdown(id: UUID) {
         activeCountdowns.removeAll { $0.id == id }
+    }
+
+    func updateRemark(id: UUID, remark: String) {
+        guard let index = activeCountdowns.firstIndex(where: { $0.id == id }) else { return }
+        activeCountdowns[index].remark = String(remark.prefix(100))
     }
 
     func countFor(minutes: Int) -> Int {
@@ -214,10 +229,18 @@ final class CountdownStore: ObservableObject {
         formatter.dateStyle = .none
         formatter.timeStyle = .medium
         let remainingSeconds = max(0, Int(item.endDate.timeIntervalSince(now)))
-        if language == .english {
-            return "Start: \(formatter.string(from: item.startDate))\nEnd: \(formatter.string(from: item.endDate))\nRemaining: \(remainingSeconds)s"
+        let remarkLine: String
+        if item.remark.isEmpty {
+            remarkLine = ""
+        } else if language == .english {
+            remarkLine = "\nRemark: \(item.remark)"
+        } else {
+            remarkLine = "\n备注：\(item.remark)"
         }
-        return "开始：\(formatter.string(from: item.startDate))\n结束：\(formatter.string(from: item.endDate))\n剩余：\(remainingSeconds) 秒"
+        if language == .english {
+            return "Start: \(formatter.string(from: item.startDate))\nEnd: \(formatter.string(from: item.endDate))\nRemaining: \(remainingSeconds)s\(remarkLine)"
+        }
+        return "开始：\(formatter.string(from: item.startDate))\n结束：\(formatter.string(from: item.endDate))\n剩余：\(remainingSeconds) 秒\(remarkLine)"
     }
 
     var nearestRemainingMMSS: String? {
@@ -348,12 +371,19 @@ final class CountdownStore: ObservableObject {
             "\(item.originalMinutes)-minute timer is complete.",
             "\(item.originalMinutes) 分钟倒计时已完成。"
         )
+        if !item.remark.isEmpty {
+            let remarkLabel = NSTextField(wrappingLabelWithString: item.remark)
+            remarkLabel.preferredMaxLayoutWidth = 260
+            remarkLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            remarkLabel.textColor = .secondaryLabelColor
+            alert.accessoryView = remarkLabel
+        }
         alert.icon = AppIconStyle.hourglass(pointSize: 48)
         alert.addButton(withTitle: localized("Restart \(item.originalMinutes) min", "重新计时 \(item.originalMinutes) 分钟"))
         alert.addButton(withTitle: localized("Got it", "我知道了"))
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            addCountdown(minutes: item.originalMinutes)
+            addCountdown(minutes: item.originalMinutes, remark: item.remark)
         }
 
         isPresentingAlert = false
@@ -369,6 +399,8 @@ struct CountdownMenuBarView: View {
     @State private var showSettings = false
     @State private var presetMinutesInput = ""
     @State private var windowHeight: CGFloat = 0
+    @State private var remarkEditingID: UUID?
+    @State private var remarkDraft = ""
 
     private func confirmAndQuit() {
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -555,23 +587,65 @@ struct CountdownMenuBarView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(store.activeCountdowns.sorted(by: { $0.endDate < $1.endDate })) { item in
-                        HStack {
+                        HStack(spacing: 6) {
                             Text(store.localized("\(item.originalMinutes) min", "\(item.originalMinutes) 分钟"))
-                                .frame(width: 90, alignment: .leading)
+                                .frame(width: 58, alignment: .leading)
 
-                            Spacer()
+                            Text(item.remark)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
 
                             Text(store.remainingText(for: item, now: store.currentTime))
                                 .monospacedDigit()
                                 .font(.system(.body, design: .monospaced))
+                                .frame(width: 52, alignment: .trailing)
 
-                            Button {
-                                store.stopCountdown(id: item.id)
-                            } label: {
-                                Image(systemName: "xmark.circle")
+                            Button(store.localized("Remark", "备注")) {
+                                remarkDraft = item.remark
+                                remarkEditingID = item.id
                             }
-                            .buttonStyle(.plain)
-                            .help(store.localized("Stop this timer", "关闭这个计时"))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .popover(isPresented: Binding(
+                                get: { remarkEditingID == item.id },
+                                set: { isPresented in
+                                    if !isPresented { remarkEditingID = nil }
+                                }
+                            ), arrowEdge: .top) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(store.localized("Remark (max 100 chars)", "备注（最多 100 字）"))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    TextField(
+                                        store.localized("Enter remark", "输入备注"),
+                                        text: Binding(
+                                            get: { remarkDraft },
+                                            set: { newValue in
+                                                remarkDraft = String(newValue.prefix(100))
+                                                store.updateRemark(id: item.id, remark: remarkDraft)
+                                            }
+                                        )
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+                                    Text("\(remarkDraft.count)/100")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .trailing)
+                                }
+                                .padding(12)
+                                .frame(width: 220)
+                            }
+
+                            Button(store.localized("Stop", "关闭")) {
+                                store.stopCountdown(id: item.id)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
